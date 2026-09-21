@@ -13,15 +13,6 @@ from .revocation import parse_crl, parse_ocsp
 OBJECT_TYPES = ("certificate", "crl", "ocsp")
 
 
-def certificate_node_key(meta: dict) -> tuple:
-    """Stable key used by the graph index for equivalent certificate nodes."""
-    return (
-        meta.get("subject_der_hex"),
-        meta.get("ski"),
-        meta.get("serial_hex"),
-    )
-
-
 def compute_meta(otype: str, der: bytes) -> dict:
     if otype == "certificate":
         info = parse_certificate(der)
