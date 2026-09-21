@@ -25,7 +25,6 @@ from .canonical import (
 )
 from .errors import ApiError
 from .graph import Explorer
-from .objmeta import OBJECT_TYPES, certificate_node_key
 from .pki import check_name_constraints, evaluate_policies, parse_certificate
 from .revocation import RevocationEvaluator, parse_crl, parse_ocsp
 
@@ -183,17 +182,15 @@ class _Engine:
 
     def explore_once(self, active: set):
         metas = self.metas
-        cert_groups: dict[tuple, list[str]] = {}
-        for fp in active:
-            if metas[fp]["type"] != "certificate":
-                continue
-            cert_groups.setdefault(certificate_node_key(metas[fp]["meta"]), []).append(fp)
-        representatives = {
-            fp
-            for members in cert_groups.values()
-            for fp in [min(members)]
-        }
-        cert_metas = {fp: metas[fp]["meta"] for fp in representatives}
+        # Every distinct DER certificate (already deduplicated by fingerprint
+        # at ingest) is its own graph node.  Certificates that share subject,
+        # key and serial but differ in DER - e.g. cross-signings under
+        # different roots with different extension constraints - must stay
+        # separate nodes; collapsing them would discard viable paths.
+        cert_fps = [
+            fp for fp in active if metas[fp]["type"] == "certificate"
+        ]
+        cert_metas = {fp: metas[fp]["meta"] for fp in cert_fps}
         by_subject: dict = {}
         children: dict = {}
         for fp, m in cert_metas.items():

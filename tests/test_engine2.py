@@ -259,6 +259,56 @@ def test_ocsp_sha256_certid():
     assert res["verdict"] == "VALID", dumps(res["decision"]).decode()
 
 
+def test_cross_signed_same_key_subject_serial_distinct_der():
+    """Two intermediates with identical subject, public key and serial but
+    distinct DER (different issuers/constraints) are separate graph nodes.
+
+    One path rejects the leaf on name constraints; the other is open.  The
+    engine must retain both DER certificates and select the open path.
+    """
+    from cryptography import x509
+
+    from acceptance.pki_fixtures import make_key
+
+    bag = Bag()
+    root_a = make_ca("Root A", "rsa", not_before=T("2020-01-01"), not_after=T("2040-01-01"))
+    root_b = make_ca("Root B", "ec", not_before=T("2020-01-01"), not_after=T("2040-01-01"))
+    inter_key = make_key("ec")
+    nc = x509.NameConstraints(
+        permitted_subtrees=[x509.DNSName("restricted.example")], excluded_subtrees=None)
+    inter_a = make_ca("Inter X", "ec", issuer=root_a, key=inter_key, serial=5000,
+                      not_before=T("2021-01-01"), not_after=T("2035-01-01"),
+                      name_constraints=nc)
+    inter_b = make_ca("Inter X", "ec", issuer=root_b, key=inter_key,
+                      subject_name=inter_a.cert.subject, serial=5000,
+                      not_before=T("2021-01-01"), not_after=T("2035-01-01"))
+    # the two intermediates really do share key+subject+serial but not DER
+    assert inter_a.der != inter_b.der
+    assert inter_a.cert.serial_number == inter_b.cert.serial_number
+    leaf = make_leaf(inter_a, "Leaf", "ed", not_before=T("2022-01-01"),
+                     not_after=T("2030-01-01"), eku=["1.3.6.1.5.5.7.3.3"],
+                     san_dns=["www.example.org"])
+    for e in (root_a, root_b, inter_a, inter_b, leaf):
+        bag.cert(e)
+    bag.add(make_crl(inter_a, entries=[], crl_number=1, this_update=T("2024-05-01"),
+                     next_update=T("2024-07-01")), "crl", EARLY)
+    bag.add(make_crl(root_a, entries=[], crl_number=1, this_update=T("2024-05-01"),
+                     next_update=T("2024-07-01")), "crl", EARLY)
+    bag.add(make_crl(root_b, entries=[], crl_number=1, this_update=T("2024-05-01"),
+                     next_update=T("2024-07-01")), "crl", EARLY)
+    anchors = [sha256_hex(root_a.der), sha256_hex(root_b.der)]
+    res = adjudicate(bag, sha256_hex(leaf.der), anchors, leaf_key=leaf.key)
+    assert res["verdict"] == "VALID", dumps(res["decision"]).decode()
+    assert res["decision"]["path"] == [
+        sha256_hex(leaf.der), sha256_hex(inter_b.der), sha256_hex(root_b.der)
+    ]
+    # trusting only the constraining root leaves the single restricted path
+    res_a = adjudicate(bag, sha256_hex(leaf.der), [sha256_hex(root_a.der)],
+                       leaf_key=leaf.key)
+    assert res_a["verdict"] == "INVALID"
+    assert "NAME_CONSTRAINT_NOT_PERMITTED" in res_a["summary"]["failure_codes"]
+
+
 def test_duplicate_cert_objects_do_not_duplicate_paths():
     bag = Bag()
     root = make_ca("Root", "rsa", not_before=T("2020-01-01"), not_after=T("2040-01-01"))
